@@ -97,10 +97,11 @@ fn main() -> ! {
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let (wifi, _) = peripherals.RADIO.split();
-    let (wifi_interface, controller) = match esp_wifi::wifi::new_with_mode(&init, wifi, WifiMode::Sta) {
-        Ok((wifi_interface, controller)) => (wifi_interface, controller),
-        Err(..) => panic!("WiFi mode Error!")
-    };
+    let (wifi_interface, controller) =
+        match esp_wifi::wifi::new_with_mode(&init, wifi, WifiMode::Sta) {
+            Ok((wifi_interface, controller)) => (wifi_interface, controller),
+            Err(..) => panic!("WiFi mode Error!"),
+        };
 
     // Create a new peripheral object with the described wiring
     // and standard I2C clock speed
