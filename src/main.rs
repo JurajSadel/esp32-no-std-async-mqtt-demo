@@ -67,11 +67,7 @@ fn main() -> ! {
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
 
-    let timer = TimerGroup::new(
-        peripherals.TIMG1,
-        &clocks,
-    )
-    .timer0;
+    let timer = TimerGroup::new(peripherals.TIMG1, &clocks).timer0;
     rtc.rwdt.disable();
 
     let init = initialize(
@@ -83,14 +79,7 @@ fn main() -> ! {
     )
     .expect("Failed to initialize Wifi");
 
-    embassy::init(
-        &clocks,
-        TimerGroup::new(
-            peripherals.TIMG0,
-            &clocks,
-        )
-        .timer0,
-    );
+    embassy::init(&clocks, TimerGroup::new(peripherals.TIMG0, &clocks).timer0);
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
