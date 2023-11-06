@@ -63,14 +63,13 @@ macro_rules! singleton {
 fn main() -> ! {
     let peripherals = Peripherals::take();
 
-    let mut system = peripherals.DPORT.split();
+    let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
     let mut rtc = Rtc::new(peripherals.RTC_CNTL);
 
     let timer = TimerGroup::new(
         peripherals.TIMG1,
         &clocks,
-        &mut system.peripheral_clock_control,
     )
     .timer0;
     rtc.rwdt.disable();
@@ -89,14 +88,13 @@ fn main() -> ! {
         TimerGroup::new(
             peripherals.TIMG0,
             &clocks,
-            &mut system.peripheral_clock_control,
         )
         .timer0,
     );
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let (wifi, _) = peripherals.RADIO.split();
+    let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
         match esp_wifi::wifi::new_with_mode(&init, wifi, WifiMode::Sta) {
             Ok((wifi_interface, controller)) => (wifi_interface, controller),
@@ -110,7 +108,6 @@ fn main() -> ! {
         io.pins.gpio21,
         io.pins.gpio22,
         100u32.kHz(),
-        &mut system.peripheral_clock_control,
         &clocks,
     );
 
