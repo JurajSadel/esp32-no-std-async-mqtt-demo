@@ -6,17 +6,17 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-hal = { package = "esp32-hal", version = "=0.15.0", features = ["embassy", "async", "embassy-time-timg0", "rt"] }
-esp-wifi = { git = "https://github.com/esp-rs/esp-wifi", features = ["esp32", "async", "embassy-net", "embedded-svc", "wifi", "ipv6"] }
+hal = { package = "esp32-hal", version = "0.16.0", features = ["embassy", "async", "embassy-time-timg0", "rt"] }
+esp-wifi = { git = "https://github.com/esp-rs/esp-wifi", rev = "9db53d3", features = ["esp32", "async", "embassy-net", "embedded-svc", "wifi", "ipv6"] }
 nb = "1.0.0"
 embedded-io = "0.4.0"
 heapless = "0.7.16"
 esp-backtrace = { version = "0.7.0", features = ["esp32", "panic-handler", "exception-handler", "print-uart"] }
 esp-println       = { version = "0.5.0", features = ["esp32","log"] }
-embedded-svc = { version = "0.25.0", default-features = false}
+embedded-svc = { version = "0.26.2", default-features = false}
 embassy-net = { version = "0.1.0", features = ["nightly", "tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv6", "dns"] }
 embassy-executor  = { version = "0.2.0", features = ["nightly", "integrated-timers", "arch-xtensa", "executor-thread"] }
-embassy-time       = { version = "=0.1.3", features = ["nightly"] }
+embassy-time       = { version = "=0.1.5", features = ["nightly"] }
 embedded-hal-1     = { version = "=1.0.0-rc.1", package = "embedded-hal" }
 embedded-hal-async = { version = "=1.0.0-rc.1" }
 embedded-hal-nb    = { version = "=1.0.0-rc.1" }
