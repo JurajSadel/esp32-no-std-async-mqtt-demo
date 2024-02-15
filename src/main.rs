@@ -6,21 +6,21 @@
 use hal::{
     clock::{ClockControl, CpuClock},
     i2c::I2C,
-    peripherals::{Interrupt, Peripherals, I2C0},
+    peripherals::{Interrupt, Peripherals},
     prelude::{_fugit_RateExtU32, *},
     timer::TimerGroup,
-    Rng, Rtc, IO, {embassy, interrupt},
+    Rng, IO, {embassy, interrupt},
 };
 
 // Wifi-related imports
 use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp_wifi::{
-    wifi::{WifiController, WifiDevice, WifiEvent, WifiMode, WifiState},
+    wifi::{WifiController, WifiDevice, WifiEvent, WifiStaDevice, WifiState},
     {initialize, EspWifiInitFor},
 };
 
 // embassy related imports
-use embassy_executor::{Executor, _export::StaticCell};
+use embassy_executor::Spawner;
 use embassy_net::{
     tcp::TcpSocket,
     {dns::DnsQueryType, Config, Stack, StackResources},
@@ -42,33 +42,22 @@ use rust_mqtt::{
 use core::fmt::Write;
 use heapless::String;
 
+use static_cell::make_static;
+
 use esp_backtrace as _;
 use esp_println::println;
-
-static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
 
-macro_rules! singleton {
-    ($val:expr) => {{
-        type T = impl Sized;
-        static STATIC_CELL: StaticCell<T> = StaticCell::new();
-        let (x,) = STATIC_CELL.init(($val,));
-        x
-    }};
-}
-
-#[entry]
-fn main() -> ! {
+#[main]
+async fn main(spawner: Spawner) -> ! {
     let peripherals = Peripherals::take();
 
     let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
-    let mut rtc = Rtc::new(peripherals.RTC_CNTL);
 
     let timer = TimerGroup::new(peripherals.TIMG1, &clocks).timer0;
-    rtc.rwdt.disable();
 
     let init = initialize(
         EspWifiInitFor::Wifi,
@@ -79,16 +68,14 @@ fn main() -> ! {
     )
     .expect("Failed to initialize Wifi");
 
-    embassy::init(&clocks, TimerGroup::new(peripherals.TIMG0, &clocks).timer0);
+    let timer_group0 = hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks);
+    embassy::init(&clocks, timer_group0);
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let wifi = peripherals.WIFI;
     let (wifi_interface, controller) =
-        match esp_wifi::wifi::new_with_mode(&init, wifi, WifiMode::Sta) {
-            Ok((wifi_interface, controller)) => (wifi_interface, controller),
-            Err(..) => panic!("WiFi mode Error!"),
-        };
+        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
 
     // Create a new peripheral object with the described wiring
     // and standard I2C clock speed
@@ -105,81 +92,19 @@ fn main() -> ! {
     let seed = 1234; // very random, very secure seed
 
     // Init network stack
-    let stack = &*singleton!(Stack::new(
+    let stack = &*make_static!(Stack::new(
         wifi_interface,
         config,
-        singleton!(StackResources::<3>::new()),
+        make_static!(StackResources::<3>::new()),
         seed
     ));
 
     interrupt::enable(Interrupt::I2C_EXT0, interrupt::Priority::Priority1)
         .expect("Invalid Interrupt Priority Error");
 
-    let executor = EXECUTOR.init(Executor::new());
-    executor.run(|spawner| {
-        spawner.spawn(connection(controller)).ok();
-        spawner.spawn(net_task(&stack)).ok();
-        spawner.spawn(task(&stack, i2c0)).ok();
-    });
-}
-// maintains wifi connection, when it disconnects it tries to reconnect
-#[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.get_capabilities());
-    loop {
-        match esp_wifi::wifi::get_wifi_state() {
-            WifiState::StaConnected => {
-                // wait until we're no longer connected
-                controller.wait_for_event(WifiEvent::StaDisconnected).await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => {}
-        }
-        if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = Configuration::Client(ClientConfiguration {
-                ssid: SSID.into(),
-                password: PASSWORD.into(),
-                ..Default::default()
-            });
+    spawner.spawn(connection(controller)).ok();
+    spawner.spawn(net_task(&stack)).ok();
 
-            match controller.set_configuration(&client_config) {
-                Ok(()) => {}
-                Err(e) => {
-                    println!("Failed to connect to wifi: {e:?}");
-                    continue;
-                }
-            }
-            println!("Starting wifi");
-            match controller.start().await {
-                Ok(()) => {}
-                Err(e) => {
-                    println!("Failed to connect to wifi: {e:?}");
-                    continue;
-                }
-            }
-            println!("Wifi started!");
-        }
-        println!("About to connect...");
-
-        match controller.connect().await {
-            Ok(_) => println!("Wifi connected!"),
-            Err(e) => {
-                println!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await
-            }
-        }
-    }
-}
-
-// A background task, to process network events - when new packets, they need to processed, embassy-net, wraps smoltcp
-#[embassy_executor::task]
-async fn net_task(stack: &'static Stack<WifiDevice<'static>>) {
-    stack.run().await
-}
-
-#[embassy_executor::task]
-async fn task(stack: &'static Stack<WifiDevice<'static>>, i2c: I2C<'static, I2C0>) {
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
 
@@ -255,7 +180,7 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>, i2c: I2C<'static, I2C0
             },
         }
 
-        let mut bmp = Bmp180::new(i2c, sleep).await;
+        let mut bmp = Bmp180::new(i2c0, sleep).await;
         loop {
             bmp.measure().await;
             let temperature = bmp.get_temperature();
@@ -289,6 +214,48 @@ async fn task(stack: &'static Stack<WifiDevice<'static>>, i2c: I2C<'static, I2C0
             Timer::after(Duration::from_millis(3000)).await;
         }
     }
+}
+// maintains wifi connection, when it disconnects it tries to reconnect
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    println!("start connection task");
+    println!("Device capabilities: {:?}", controller.get_capabilities());
+    loop {
+        match esp_wifi::wifi::get_wifi_state() {
+            WifiState::StaConnected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
+        }
+        if !matches!(controller.is_started(), Ok(true)) {
+            let client_config = Configuration::Client(ClientConfiguration {
+                ssid: SSID.try_into().unwrap(),
+                password: PASSWORD.try_into().unwrap(),
+                ..Default::default()
+            });
+            controller.set_configuration(&client_config).unwrap();
+            println!("Starting wifi");
+            controller.start().await.unwrap();
+            println!("Wifi started!");
+        }
+        println!("About to connect...");
+
+        match controller.connect().await {
+            Ok(_) => println!("Wifi connected!"),
+            Err(e) => {
+                println!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
+    }
+}
+
+// A background task, to process network events - when new packets, they need to processed, embassy-net, wraps smoltcp
+#[embassy_executor::task]
+async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
+    stack.run().await
 }
 
 pub async fn sleep(millis: u32) {
