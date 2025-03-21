@@ -1,29 +1,29 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
+// #![feature(impl_trait_in_assoc_type)]
 
 // peripherals-related imports
-use hal::{
-    clock::{ClockControl, CpuClock},
-    i2c::I2C,
-    peripherals::{Interrupt, Peripherals},
-    prelude::{_fugit_RateExtU32, *},
-    timer::TimerGroup,
-    Rng, IO, {embassy, interrupt},
+use esp_alloc as _;
+use esp_hal::{
+    clock::CpuClock,
+    i2c::master::{Config, I2c},
+    rng::Rng,
+    timer::timg::TimerGroup,
 };
 
 // Wifi-related imports
-use embedded_svc::wifi::{ClientConfiguration, Configuration, Wifi};
 use esp_wifi::{
-    wifi::{WifiController, WifiDevice, WifiEvent, WifiStaDevice, WifiState},
-    {initialize, EspWifiInitFor},
+    init,
+    wifi::{ClientConfiguration, Configuration, WifiController, WifiDevice, WifiEvent, WifiState},
+    EspWifiController,
 };
 
 // embassy related imports
 use embassy_executor::Spawner;
 use embassy_net::{
     tcp::TcpSocket,
-    {dns::DnsQueryType, Config, Stack, StackResources},
+    Runner,
+    {dns::DnsQueryType, Config as EmbassyNetConfig, StackResources},
 };
 use embassy_time::{Duration, Timer};
 
@@ -42,68 +42,67 @@ use rust_mqtt::{
 use core::fmt::Write;
 use heapless::String;
 
-use static_cell::make_static;
-
 use esp_backtrace as _;
-use esp_println::println;
+use log::{debug, error, info};
 
-const SSID: &str = env!("SSID");
-const PASSWORD: &str = env!("PASSWORD");
+// Define the SSID and PASSWORD for the WiFi connection
+const SSID: &str = "your_wifi_ssid";
+const PASSWORD: &str = "your_wifi_password";
 
-#[main]
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+#[esp_hal_embassy::main]
 async fn main(spawner: Spawner) -> ! {
-    let peripherals = Peripherals::take();
+    esp_println::logger::init_logger_from_env();
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
 
-    let system = peripherals.SYSTEM.split();
-    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
-    let timer = TimerGroup::new(peripherals.TIMG1, &clocks).timer0;
+    let timg0 = TimerGroup::new(peripherals.TIMG0);
+    let mut rng = Rng::new(peripherals.RNG);
 
-    let init = initialize(
-        EspWifiInitFor::Wifi,
-        timer,
-        Rng::new(peripherals.RNG),
-        system.radio_clock_control,
-        &clocks,
-    )
-    .expect("Failed to initialize Wifi");
+    let esp_wifi_ctrl = &*mk_static!(
+        EspWifiController<'static>,
+        init(timg0.timer0, rng.clone(), peripherals.RADIO_CLK).unwrap()
+    );
 
-    let timer_group0 = hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks);
-    embassy::init(&clocks, timer_group0);
+    let (controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI).unwrap();
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-
-    let wifi = peripherals.WIFI;
-    let (wifi_interface, controller) =
-        esp_wifi::wifi::new_with_mode(&init, wifi, WifiStaDevice).unwrap();
+    let wifi_interface = interfaces.sta;
 
     // Create a new peripheral object with the described wiring
     // and standard I2C clock speed
-    let i2c0 = I2C::new(
-        peripherals.I2C0,
-        io.pins.gpio21,
-        io.pins.gpio22,
-        100u32.kHz(),
-        &clocks,
-    );
+    let i2c0 = I2c::new(peripherals.I2C0, Config::default())
+        .unwrap()
+        .with_sda(peripherals.GPIO21)
+        .with_scl(peripherals.GPIO22)
+        .into_async();
 
-    let config = Config::dhcpv4(Default::default());
+    let timg1 = TimerGroup::new(peripherals.TIMG1);
+    esp_hal_embassy::init(timg1.timer0);
 
-    let seed = 1234; // very random, very secure seed
+    let config = EmbassyNetConfig::dhcpv4(Default::default());
+
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
     // Init network stack
-    let stack = &*make_static!(Stack::new(
+    let (stack, runner) = embassy_net::new(
         wifi_interface,
         config,
-        make_static!(StackResources::<3>::new()),
-        seed
-    ));
-
-    interrupt::enable(Interrupt::I2C_EXT0, interrupt::Priority::Priority1)
-        .expect("Invalid Interrupt Priority Error");
+        mk_static!(StackResources<3>, StackResources::<3>::new()),
+        seed,
+    );
 
     spawner.spawn(connection(controller)).ok();
-    spawner.spawn(net_task(&stack)).ok();
+    spawner.spawn(net_task(runner)).ok();
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
@@ -116,10 +115,10 @@ async fn main(spawner: Spawner) -> ! {
         Timer::after(Duration::from_millis(500)).await;
     }
 
-    println!("Waiting to get IP address...");
+    info!("Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {
-            println!("Got IP: {}", config.address); //dhcp IP address
+            info!("Got IP: {}", config.address); //dhcp IP address
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -128,7 +127,7 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
+        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
 
@@ -139,19 +138,19 @@ async fn main(spawner: Spawner) -> ! {
         {
             Ok(address) => address,
             Err(e) => {
-                println!("DNS lookup error: {e:?}");
+                error!("DNS lookup error: {e:?}");
                 continue;
             }
         };
 
         let remote_endpoint = (address, 1883);
-        println!("connecting...");
+        info!("connecting...");
         let connection = socket.connect(remote_endpoint).await;
         if let Err(e) = connection {
-            println!("connect error: {:?}", e);
+            error!("connect error: {:?}", e);
             continue;
         }
-        println!("connected!");
+        info!("connected!");
 
         let mut config = ClientConfig::new(
             rust_mqtt::client::client_config::MqttVersion::MQTTv5,
@@ -170,11 +169,11 @@ async fn main(spawner: Spawner) -> ! {
             Ok(()) => {}
             Err(mqtt_error) => match mqtt_error {
                 ReasonCode::NetworkError => {
-                    println!("MQTT Network Error");
+                    error!("MQTT Network Error");
                     continue;
                 }
                 _ => {
-                    println!("Other MQTT Error: {:?}", mqtt_error);
+                    error!("Other MQTT Error: {:?}", mqtt_error);
                     continue;
                 }
             },
@@ -184,7 +183,7 @@ async fn main(spawner: Spawner) -> ! {
         loop {
             bmp.measure().await;
             let temperature = bmp.get_temperature();
-            println!("Current temperature: {}", temperature);
+            info!("Current temperature: {}", temperature);
 
             // Convert temperature into String
             let mut temperature_string: String<32> = String::new();
@@ -202,11 +201,11 @@ async fn main(spawner: Spawner) -> ! {
                 Ok(()) => {}
                 Err(mqtt_error) => match mqtt_error {
                     ReasonCode::NetworkError => {
-                        println!("MQTT Network Error");
+                        error!("MQTT Network Error");
                         continue;
                     }
                     _ => {
-                        println!("Other MQTT Error: {:?}", mqtt_error);
+                        error!("Other MQTT Error: {:?}", mqtt_error);
                         continue;
                     }
                 },
@@ -215,13 +214,14 @@ async fn main(spawner: Spawner) -> ! {
         }
     }
 }
+
 // maintains wifi connection, when it disconnects it tries to reconnect
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
-    println!("start connection task");
-    println!("Device capabilities: {:?}", controller.get_capabilities());
+    info!("start connection task");
+    debug!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        match esp_wifi::wifi::get_wifi_state() {
+        match esp_wifi::wifi::wifi_state() {
             WifiState::StaConnected => {
                 // wait until we're no longer connected
                 controller.wait_for_event(WifiEvent::StaDisconnected).await;
@@ -236,16 +236,16 @@ async fn connection(mut controller: WifiController<'static>) {
                 ..Default::default()
             });
             controller.set_configuration(&client_config).unwrap();
-            println!("Starting wifi");
-            controller.start().await.unwrap();
-            println!("Wifi started!");
+            info!("Starting wifi");
+            controller.start_async().await.unwrap();
+            info!("Wifi started!");
         }
-        println!("About to connect...");
+        info!("About to connect...");
 
-        match controller.connect().await {
-            Ok(_) => println!("Wifi connected!"),
+        match controller.connect_async().await {
+            Ok(_) => info!("Wifi connected!"),
             Err(e) => {
-                println!("Failed to connect to wifi: {e:?}");
+                error!("Failed to connect to wifi: {e:?}");
                 Timer::after(Duration::from_millis(5000)).await
             }
         }
@@ -254,8 +254,8 @@ async fn connection(mut controller: WifiController<'static>) {
 
 // A background task, to process network events - when new packets, they need to processed, embassy-net, wraps smoltcp
 #[embassy_executor::task]
-async fn net_task(stack: &'static Stack<WifiDevice<'static, WifiStaDevice>>) {
-    stack.run().await
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
 }
 
 pub async fn sleep(millis: u32) {
