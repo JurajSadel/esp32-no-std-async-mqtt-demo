@@ -6,25 +6,35 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-hal = { package = "esp32-hal", version = "0.18.0", features = ["embassy", "async", "embassy-time-timg0", "rt", "embassy-executor-thread"] }
-esp-wifi = { version = "0.3.0", features = ["esp32", "async", "embassy-net", "wifi", "ipv6"] }
-log = "0.4.16"
-nb = "1.0.0"
-embedded-io = "0.6.1"
-heapless = "0.8.0"
-esp-backtrace = { version = "0.7.0", features = ["esp32", "panic-handler", "exception-handler", "print-uart"] }
-esp-println       = { version = "0.9.0", features = ["esp32","log"] }
-embedded-svc = { version = "0.27.0", default-features = false}
-embassy-net = { version = "0.4.0", features = ["tcp", "udp", "dhcpv4", "medium-ethernet", "proto-ipv6", "log", "dns"] }
-embassy-executor = { version = "0.5.0", features = [
-    "nightly",
-    "integrated-timers",
+esp-hal = { version = "1.0.0-beta.0", features = ["esp32", "unstable"] }
+esp-wifi = { version = "0.13.0", features = [
+    "esp32",
+    "wifi",
+    "esp-alloc",
+    "log",
 ] }
-embassy-time       = { version = "0.3.0" }
-embedded-hal       = { version = "0.2.7", features = ["unproven"] }
-embedded-hal-1     = { version = "1.0.0", package = "embedded-hal" }
+esp-alloc = { version = "0.7.0" }
+log = "0.4.22"
+heapless = "0.8.0"
+esp-backtrace = { version = "0.15.1", features = [
+    "esp32",
+    "exception-handler",
+    "panic-handler",
+    "println",
+] }
+esp-hal-embassy = { version = "0.7.0", features = ["esp32"] }
+esp-println = { version = "0.13.1", features = ["esp32", "log"] }
+embassy-net = { version = "0.6.0", features = [
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "medium-ethernet",
+    "proto-ipv6",
+    "log",
+    "dns",
+] }
+embassy-executor = { version = "0.7.0", features = ["task-arena-size-20480"] }
+embassy-time = "0.4.0"
 embedded-hal-async = { version = "1.0.0" }
-embedded-hal-nb    = { version = "1.0.0" }
-embedded-can       = { version = "0.4.1" }
 static_cell = { version = "2.0", features = ["nightly"] }
 rust-mqtt = { version = "0.3.0", default-features = false }
