@@ -45,9 +45,11 @@ use heapless::String;
 use esp_backtrace as _;
 use log::{debug, error, info};
 
+esp_bootloader_esp_idf::esp_app_desc!();
+
 // Define the SSID and PASSWORD for the WiFi connection
-const SSID: &str = "your_wifi_ssid";
-const PASSWORD: &str = "your_wifi_password";
+const SSID: &str = env!("SSID");
+const PASSWORD: &str = env!("PASSWORD");
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
